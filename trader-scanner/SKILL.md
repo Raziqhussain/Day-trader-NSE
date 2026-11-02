@@ -27,7 +27,10 @@ the scanner does not change that. It only saves you from flipping through
 `${CLAUDE_SKILL_DIR}` below is this skill's folder (where this SKILL.md lives).
 
 ```bash
-python3 "${CLAUDE_SKILL_DIR}/scan.py" universe                       # -> trader/universe.txt
+python3 "${CLAUDE_SKILL_DIR}/scan.py" universe --exchange nse        # every NSE EQ stock -> trader/universe-nse.txt
+python3 "${CLAUDE_SKILL_DIR}/scan.py" universe --exchange nse --offline EQUITY_L.csv   # when NSE refuses the download
+python3 "${CLAUDE_SKILL_DIR}/scan.py" orb --universe trader/universe-nse.txt          # all of NSE
+python3 "${CLAUDE_SKILL_DIR}/scan.py" universe                       # US: Nasdaq Trader's lists -> trader/universe.txt
 python3 "${CLAUDE_SKILL_DIR}/scan.py" daily                          # before the open -> trader/watchlist.json
 python3 "${CLAUDE_SKILL_DIR}/scan.py" daily --symbols TSLA,NVDA,AMD  # or --watchlist FILE, --limit 200
 python3 "${CLAUDE_SKILL_DIR}/scan.py" orb                            # after 9:35 AM IST -> trader/watchlist.json
@@ -52,7 +55,18 @@ reason is one plain line).
 
 ## The universe
 
-`universe` downloads `nasdaqlisted.txt` and `otherlisted.txt` from
+**NSE.** `universe --exchange nse` reads NSE's `EQUITY_L.csv`
+(nsearchives.nseindia.com/content/equities/EQUITY_L.csv) and keeps the EQ
+series, written as `SYMBOL.NS|Name` to `trader/universe-nse.txt`. BE and BZ
+stocks settle trade for trade, so they cannot be day traded and are left
+out. NSE often refuses downloads from scripts: then the user downloads the
+file in a browser and passes it with `--offline EQUITY_L.csv`. Never fetch
+it by pretending to be a browser.
+
+Each opening-range hit carries `turnover`: rupees traded so far (close x
+volume of every bar to the cutoff), the first thing to check for liquidity.
+
+**US.** `universe` downloads `nasdaqlisted.txt` and `otherlisted.txt` from
 nasdaqtrader.com/dynamic/SymDir and keeps a row when, in this order:
 
 1. It is not a test issue, not an ETF, not NextShares.
@@ -141,7 +155,7 @@ setup) it prints one plain line and writes nothing. NSE has no early closes.
 
 ## Steps
 
-1. Once a week or so: `scan.py universe`.
+1. Once a week or so: `scan.py universe --exchange nse` (or `scan.py universe` for the US).
 2. Before the open: `scan.py daily`. Tell the user the counts (fetched,
    liquid, scanned, hits) and the top few by setup.
 3. After 9:35 AM IST (10:15 is the classic): `scan.py orb`. Tell the user how

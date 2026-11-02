@@ -19,6 +19,7 @@ WALL = os.path.join(SDIR, "wall5m-2026-10-19.json.gz")       # 234 real 5-min ch
 DAILY = os.path.join(SDIR, "daily-spark-2026-10-19.json")    # 19 real daily charts as one spark answer
 LIVE = os.path.join(SDIR, "spark-3mo-live-2026-10-20.json")  # a real 20-symbol spark answer
 SYMDIR = os.path.join(SDIR, "symdir")                        # trimmed Nasdaq Trader files of Oct 19
+NSE_LIST = os.path.join(SDIR, "EQUITY_L-sample.csv")          # NSE's EQUITY_L.csv format, a made-up sample
 SPARK5 = os.path.join(SDIR, "spark-5m-live-2026-10-21-0946.json")  # real, fetched 10:01:47 AM New York Oct 20,
 TSLA5 = os.path.join(SDIR, "TSLA-5m-live-2026-10-21-0946.json")    # moved to 9:46:47 IST Oct 21 (Oct 20: Dussehra)
 DT = datetime.datetime
@@ -112,6 +113,44 @@ class Universe(unittest.TestCase):
     def test_not_a_symbol_file(self):
         with self.assertRaises(scan.ScanError):
             scan.parse_symdir("<html>maintenance</html>")
+
+
+class NseUniverse(unittest.TestCase):
+    def test_eq_series_only_with_ns(self):
+        with open(NSE_LIST, encoding="utf-8") as fh:
+            kept, counts = scan.build_nse_universe(fh.read())
+        self.assertEqual([s for s, _ in kept], ["20MICRONS.NS", "3MINDIA.NS", "BAJAJ-AUTO.NS", "M&M.NS", "RELIANCE.NS"])
+        self.assertEqual(dict(kept)["M&M.NS"], "Mahindra & Mahindra Limited")
+        self.assertEqual(counts, {"rows": 7, "BE": 1, "BZ": 1, "keep": 5})   # trade-for-trade series left out
+        with self.assertRaises(scan.ScanError):
+            scan.build_nse_universe("<html>Access Denied</html>")
+
+    def test_cli_writes_the_nse_universe(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "trader", "universe-nse.txt")
+            code, text, _ = run(["universe", "--exchange", "nse", "--offline", NSE_LIST, "--out", out])
+            self.assertEqual(code, 0)
+            self.assertIn("Kept 5 EQ-series stocks", text)
+            self.assertIn("Left out: 1 BE, 1 BZ", text)
+            self.assertEqual(scan.symbols_from_file(out),
+                             ["20MICRONS.NS", "3MINDIA.NS", "BAJAJ-AUTO.NS", "M&M.NS", "RELIANCE.NS"])
+            code, _, err = run(["universe", "--exchange", "nse", "--offline", os.path.join(d, "missing.csv")])
+            self.assertEqual(code, 1)
+            self.assertIn("no NSE equity list", err)
+
+    def test_nse_refusing_the_download_is_one_plain_line(self):
+        old = scan.http_get
+
+        def refused(url, timeout=20):
+            raise ConnectionResetError(54, "Connection reset by peer")
+        scan.http_get = refused
+        try:
+            code, _, err = run(["universe", "--exchange", "nse", "--no-write"])
+        finally:
+            scan.http_get = old
+        self.assertEqual(code, 1)
+        self.assertIn("download it in your browser from " + scan.NSE_EQUITY_URL, err)
+        self.assertNotIn("Traceback", err)
 
 
 class Time(unittest.TestCase):
@@ -332,7 +371,7 @@ class Orb(unittest.TestCase):
         tsla = [h for h in hits if h["symbol"] == "TSLA"][0]
         self.assertEqual(tsla, {"symbol": "TSLA", "setups": ["orb"], "price": 364.18, "at": "10:00 AM",
                                 "bar_start": "09:55", "bar_index": 8, "or_high": 362.18, "or_low": 354.47,
-                                "pct_over": 0.55})
+                                "pct_over": 0.55, "turnover": 3592320562})
         self.assertEqual(hits[0]["symbol"], "AMC")         # sorted by time, then symbol
         self.assertEqual([h["at"] for h in hits], sorted([h["at"] for h in hits], key=lambda x: scan.parse_hhmm(
             x[:-3]).hour % 12 * 60 + int(x[-5:-3])))
@@ -466,7 +505,7 @@ class LiveFiveMinute(unittest.TestCase):
         # range 9:15 to 9:30: high 370.49 (the 9:15 bar), low 363.64; the 9:40 bar closed 370.585
         self.assertEqual(hits, [{"symbol": "TSLA", "setups": ["orb"], "price": 370.58, "at": "9:45 AM",
                                  "bar_start": "09:40", "bar_index": 5, "or_high": 370.49, "or_low": 363.64,
-                                 "pct_over": 0.03}])
+                                 "pct_over": 0.03, "turnover": 3640349211}])
         self.assertEqual(counts["illiquid"], 1)            # AMC under the $5 floor
 
     def test_stage_two_cap_takes_the_most_traded(self):
@@ -536,7 +575,8 @@ class Cli(unittest.TestCase):
                           "as_of": "2026-10-19 10:00 IST", "universe": 234, "scanned": 231, "source": "yahoo"})
         self.assertEqual(len(doc["hits"]), 42)
         self.assertIn({"symbol": "TSLA", "setups": ["orb"], "price": 364.18, "at": "10:00 AM", "bar_start": "09:55",
-                       "bar_index": 8, "or_high": 362.18, "or_low": 354.47, "pct_over": 0.55}, doc["hits"])
+                       "bar_index": 8, "or_high": 362.18, "or_low": 354.47, "pct_over": 0.55,
+                       "turnover": 3592320562}, doc["hits"])
 
         # the hits read back as a watchlist, with --at instead of --now
         code, text, _ = run(["orb", "--offline", WALL, "--at", "10:00", "--watchlist", self.wl, "--min-price", "0",

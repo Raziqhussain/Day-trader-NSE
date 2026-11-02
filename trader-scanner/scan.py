@@ -69,7 +69,10 @@ Exit code 0 when the scan found something, 1 when it did not or could not run.
 """
 
 import argparse
+import csv
 import datetime
+import http.client
+import io
 import gzip
 import json
 import os
@@ -84,6 +87,9 @@ UA = "Mozilla/5.0 (compatible; day-trader-skill/2.0; +https://github.com/Jakesch
 YAHOO_HOSTS = ("https://query2.finance.yahoo.com", "https://query1.finance.yahoo.com")
 NASDAQ_FILES = ("nasdaqlisted.txt", "otherlisted.txt")
 NASDAQ_URL = "https://www.nasdaqtrader.com/dynamic/SymDir/"
+NSE_EQUITY_URL = "https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv"
+NSE_SERIES = ("EQ",)  # rolling settlement, intraday allowed; BE/BZ are trade-for-trade (no day trading)
+DEFAULT_NSE_UNIVERSE = "trader/universe-nse.txt"
 SPARK_MAX = 20      # Yahoo's spark answers 400 above 20 symbols
 PAUSE = 0.3         # seconds between requests: be polite to free endpoints
 BACKOFF = 5.0       # seconds to wait before the one retry after a 429
@@ -459,6 +465,30 @@ def build_universe(texts):
 
 # ---------------------------------------------------------------- daily setups
 
+def build_nse_universe(text):
+    """NSE's EQUITY_L.csv -> ([(SYMBOL.NS, name)], counts by series). Keeps the EQ series only:
+    BE / BZ stocks settle trade for trade, so they cannot be day traded."""
+    rows = list(csv.reader(io.StringIO(text.lstrip("\ufeff"))))
+    head = [h.strip().upper() for h in rows[0]] if rows else []
+    if "SYMBOL" not in head or "SERIES" not in head:
+        raise ScanError("this is not NSE's EQUITY_L.csv (no SYMBOL and SERIES columns)")
+    i_sym, i_ser = head.index("SYMBOL"), head.index("SERIES")
+    i_name = head.index("NAME OF COMPANY") if "NAME OF COMPANY" in head else None
+    kept, counts = [], {"rows": 0}
+    for r in rows[1:]:
+        if len(r) <= max(i_sym, i_ser) or not r[i_sym].strip():
+            continue
+        counts["rows"] += 1
+        series = r[i_ser].strip().upper() or "?"
+        if series not in NSE_SERIES:
+            counts[series] = counts.get(series, 0) + 1
+            continue
+        name = r[i_name].strip() if i_name is not None and i_name < len(r) else ""
+        kept.append((r[i_sym].strip().upper() + ".NS", name))
+    counts["keep"] = len(kept)
+    return kept, counts
+
+
 def rsi(closes, n=14):
     """Wilder's RSI on closes (the same math as the reel's refs/scan.py)."""
     if len(closes) < n + 1:
@@ -661,6 +691,50 @@ def orb_window(now_utc, at, or_minutes, until, explicit_day=None):
     return day, cutoff
 
 
+def cmd_universe_nse(a):
+    t0 = time.time()
+    out = a.out or DEFAULT_NSE_UNIVERSE
+    if a.offline:
+        path = os.path.join(a.offline, "EQUITY_L.csv") if os.path.isdir(a.offline) else a.offline
+        if not os.path.exists(path):
+            raise ScanError("no NSE equity list at %s" % path)
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+        source = os.path.basename(path)
+    else:
+        try:
+            text = http_get(NSE_EQUITY_URL, timeout=60)
+        except urllib.error.HTTPError as e:
+            raise ScanError("NSE answered HTTP %d for EQUITY_L.csv: download it in your browser from %s, then "
+                            "run scan.py universe --exchange nse --offline EQUITY_L.csv" % (e.code, NSE_EQUITY_URL))
+        except (urllib.error.URLError, OSError, http.client.HTTPException) as e:
+            raise ScanError("NSE did not send EQUITY_L.csv to this script (%s): download it in your browser from %s, "
+                            "then run scan.py universe --exchange nse --offline EQUITY_L.csv"
+                            % (getattr(e, "reason", None) or e.__class__.__name__, NSE_EQUITY_URL))
+        source = NSE_EQUITY_URL
+    kept, counts = build_nse_universe(text)
+    if not a.no_write:
+        d = os.path.dirname(out)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        with open(out, "w", encoding="utf-8") as fh:
+            for sym, name in kept:
+                fh.write("%s|%s\n" % (sym, name))
+    dropped = {k: v for k, v in counts.items() if k not in ("keep", "rows")}
+    if a.json:
+        print(json.dumps({"count": len(kept), "rows": counts["rows"], "source": source, "dropped": dropped,
+                          "out": None if a.no_write else out, "seconds": round(time.time() - t0, 1)}, indent=2))
+    else:
+        print("NSE equity list (%s): %s rows." % (source, "{:,}".format(counts["rows"])))
+        print("Kept %s EQ-series stocks (the series that can be day traded)." % "{:,}".format(len(kept)))
+        if dropped:
+            print("Left out: " + ", ".join("%s %s" % ("{:,}".format(v), k)
+                                           for k, v in sorted(dropped.items(), key=lambda kv: -kv[1])) + ".")
+        if not a.no_write:
+            print("Wrote %s (one SYMBOL.NS|Name a line). Scan it with --universe %s." % (out, out))
+    return 0 if kept else 1
+
+
 def scan_orb(stage1, symbols, day, cutoff, or_minutes, min_price=0.0, min_volume=0, confirm=None,
              max_confirm=None):
     """stage1 = {SYM: series} with closes (spark or v8). confirm(sym) -> series with highs/lows
@@ -707,6 +781,8 @@ def scan_orb(stage1, symbols, day, cutoff, or_minutes, min_price=0.0, min_volume
         counts["confirmed"] += 1
         h = orb_hit(full, n_range)
         if h:
+            # rupees traded so far (close x volume per bar, to the cutoff): how liquid it is now
+            h["turnover"] = int(round(sum(b["c"] * b["v"] for b in full)))
             hits.append(dict({"symbol": sym, "setups": ["orb"]}, **h))
     hits.sort(key=lambda x: (x["_t"], x["symbol"]))
     for h in hits:
@@ -816,6 +892,9 @@ def money(x):
 # ---------------------------------------------------------------- commands
 
 def cmd_universe(a):
+    if a.exchange == "nse":
+        return cmd_universe_nse(a)
+    a.out = a.out or DEFAULT_UNIVERSE
     t0 = time.time()
     texts = {}
     for k, fname in enumerate(NASDAQ_FILES):
@@ -1009,9 +1088,11 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description="Chart Scanner (trader-scanner): daily setups and opening-range breakouts.")
     sub = ap.add_subparsers(dest="cmd")
 
-    p = sub.add_parser("universe", help="download Nasdaq Trader's lists -> trader/universe.txt")
-    p.add_argument("--out", default=DEFAULT_UNIVERSE)
-    p.add_argument("--offline", metavar="DIR", help="a folder with nasdaqlisted.txt and otherlisted.txt")
+    p = sub.add_parser("universe", help="the list of stocks to scan: Nasdaq Trader's (US) or NSE's EQUITY_L.csv")
+    p.add_argument("--exchange", choices=["nasdaq", "nse"], default="nasdaq")
+    p.add_argument("--out", help="default %s, or %s with --exchange nse" % (DEFAULT_UNIVERSE, DEFAULT_NSE_UNIVERSE))
+    p.add_argument("--offline", metavar="PATH",
+                   help="nasdaq: a folder with nasdaqlisted.txt and otherlisted.txt; nse: EQUITY_L.csv")
     p.add_argument("--no-write", action="store_true")
     p.add_argument("--pause", type=float, default=PAUSE)
     p.add_argument("--json", action="store_true")

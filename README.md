@@ -123,6 +123,9 @@ An example, the trade in the reel: Tesla, Monday October 19 2026, real data.
 ## The web UI (NSE)
 
 A local Streamlit workbench in `ui/` with four pages: Scanner, Entry, Exit plan and Time machine.
+The scanner covers every NSE EQ stock (download NSE's `EQUITY_L.csv` once and drop it on the page) and
+ranks the breakouts into a day-trade shortlist by plain rules: rupees traded so far, the distance to the
+stop and how far the price has already run. It is a rules filter, not a recommendation.
 Each page runs the skill's own tool with `--json`, so the rules match the skills exactly. It reads
 free Yahoo data on NSE hours (9:15 to 15:30 IST, flat by 15:15) and cannot place an order.
 
