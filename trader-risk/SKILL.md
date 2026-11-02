@@ -32,7 +32,7 @@ keep each loss and each day's losses small. They do not make a trade win.
 python3 "${CLAUDE_SKILL_DIR}/check.py"                           # trader/ files; writes trader/state/risk.json
 python3 "${CLAUDE_SKILL_DIR}/check.py" --json
 python3 "${CLAUDE_SKILL_DIR}/check.py" --no-write                # look without recording
-python3 "${CLAUDE_SKILL_DIR}/check.py" --now "2026-10-19 10:15"  # pin the clock (New York time)
+python3 "${CLAUDE_SKILL_DIR}/check.py" --now "2026-10-19 10:15"  # pin the clock (India time, IST)
 ```
 
 ## What it reads and writes
@@ -87,9 +87,9 @@ How the numbers work:
   used, and it says so.
 - **Daily loss** counts the full max loss of every entry placed today, win or
   lose, as trader-broker logged it. Three full-size trades use up a $150 day.
-- **The window** is New York time, worked out in the tool (daylight saving
-  included), never from the computer's clock zone. Weekends and NYSE holidays
-  are closed. On a 1:00 p.m. early close the window ends 3 hours earlier too.
+- **The window** is India time (IST), worked out in the tool (IST is UTC+5:30, no daylight
+  saving), never from the computer's clock zone. Weekends and NSE holidays
+  are closed.
   Set both `no_entries_*` to null to switch the window off.
 - **pdt_guard** (off by default) counts a day trade as a symbol bought and
   sold on the same day in the log, plus any entry placed today (it is meant
@@ -100,7 +100,7 @@ How the numbers work:
 
 Warnings do not block, but say them to the user: a LIVE account, a number
 sent as a number instead of a string, a stop that lives only in the plan and
-not at the broker, a price too old to use, an early close today.
+not at the broker, a price too old to use.
 
 ## Steps
 
@@ -118,6 +118,8 @@ not at the broker, a price too old to use, an early close today.
    until it passes again, and a verdict from yesterday does not count today.
 
 ## Example: the reel
+
+_Recorded on the US market (NYSE, New York time) before this pack was switched to NSE; the numbers are that session's._
 
 The TSLA bracket from trader-budget at 10:15 AM on Monday 2026-10-19, on a
 fresh $5,000 paper account with the example config:

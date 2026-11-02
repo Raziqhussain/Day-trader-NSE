@@ -14,7 +14,7 @@ check = load("trader-risk", "check")
 CFG_PATH = os.path.join(ROOT, "trader-budget", "config.example.json")
 ORDERS_PATH = os.path.join(FIX, "trader-risk", "orders-tsla.json")
 PLAN_PATH = os.path.join(FIX, "trader-budget", "plan-tsla.json")
-NOW = "2026-10-19 10:15"
+NOW = "2026-10-19 10:00"
 TODAY = "2026-10-19"
 AAPL = {"symbol": "AAPL", "side": "buy", "notional": "1250", "type": "market", "time_in_force": "day"}
 BATCH = ["AAPL", "AXP", "GOOGL", "KO", "BAC"]
@@ -169,13 +169,13 @@ class Flow(unittest.TestCase):
 
         code, text, _ = run(self.args("result", "--index", "1", "--status", "placed", "--broker-id", "abc123",
                                       "--filled-qty", "8", "--filled-price", "364.20", "--portfolio", self.pf,
-                                      now="2026-10-19 10:16"))
+                                      now="2026-10-19 10:01"))
         self.assertEqual(code, 0)
         st = self.state_doc()
         self.assertEqual([r["status"] for r in st["orders"]], ["approved", "placed", "filled"])
         appr, plc = st["orders"][0], st["orders"][1]
         self.assertEqual((appr["reply"], appr["kind"], appr["max_loss"], appr["date"]), ("yes", "entry", 46.88, TODAY))
-        self.assertEqual(appr["at"], "2026-10-19T10:15:00-04:00")
+        self.assertEqual(appr["at"], "2026-10-19T10:00:00+05:30")
         self.assertEqual((plc["broker_order_id"], plc["max_loss"], plc["kind"]), ("abc123", 46.88, "entry"))
         with open(self.pf) as fh:
             pf = json.load(fh)
@@ -189,7 +189,7 @@ class Flow(unittest.TestCase):
         self.assertIn("max loss $46.88", text)
 
         # trader-risk now counts it: a second TSLA buy today is a duplicate, and $46.88 is used
-        res = check.check([tsla()], {"budget": 5000}, state=st, now=check.parse_now("2026-10-19 10:30"))
+        res = check.check([tsla()], {"budget": 5000}, state=st, now=check.parse_now("2026-10-19 10:15"))
         self.assertIn("already placed today", " ".join(res["results"][0]["reasons"]))
         self.assertEqual((res["today"]["entries_placed"], res["today"]["loss_at_risk"]), (1, 46.88))
 
@@ -198,18 +198,18 @@ class Flow(unittest.TestCase):
         run(self.args("approve", "--index", "1", "--reply", "yes"))
         run(self.args("result", "--index", "1", "--status", "placed", "--broker-id", "abc",
                       "--filled-qty", "8", "--filled-price", "364.20", "--portfolio", self.pf))
-        late = "2026-10-19 15:55"
+        late = "2026-10-19 15:15"
         code, text, _ = run(["flatten", "--symbol", "TSLA", "--orders", self.orders, "--portfolio", self.pf,
                              "--plan", PLAN_PATH, "--config", self.cfg, "--now", late])
         self.assertEqual(code, 0)
-        self.assertIn("SELL 8 shares of TSLA, market order, good for today (flat by 15:55 New York)", text)
+        self.assertIn("SELL 8 shares of TSLA, market order, good for today (flat by 15:15 IST)", text)
         self.assertIn("replaced 1 earlier proposal", text)
         self.assertIn("cancel_order_by_id", text)
         with open(self.orders) as fh:
             doc = json.load(fh)
         self.assertEqual(ticket.tool_input(doc["orders"][0]),
                          {"symbol": "TSLA", "side": "sell", "qty": "8", "type": "market", "time_in_force": "day"})
-        self.assertEqual(self.run_risk(now=late), 0)       # after the 15:30 entry cutoff: an exit still passes
+        self.assertEqual(self.run_risk(now=late), 0)       # at the 15:15 flat-by time the exit passes
         with open(self.risk) as fh:
             self.assertEqual(json.load(fh)["results"][0]["kind"], "exit")
         code, text, _ = run(self.args("show", now=late))
@@ -217,7 +217,7 @@ class Flow(unittest.TestCase):
         self.assertIn("READY", text)
         self.assertEqual(run(self.args("approve", "--index", "1", "--reply", "yes sell 8 TSLA", now=late))[0], 0)
         code, _, _ = run(self.args("result", "--index", "1", "--status", "placed", "--filled-qty", "8",
-                                   "--filled-price", "366.10", "--portfolio", self.pf, now="2026-10-19 15:56"))
+                                   "--filled-price", "366.10", "--portfolio", self.pf, now="2026-10-19 15:16"))
         self.assertEqual(code, 0)
         with open(self.pf) as fh:
             pf = json.load(fh)
@@ -233,7 +233,14 @@ class Flow(unittest.TestCase):
                              "--portfolio", self.none, "--plan", self.none, "--config", self.cfg, "--now", NOW])
         self.assertEqual(code, 0)
         self.assertNotIn("Check it against get_open_position", text)
+        self.assertIn("(flat by 15:15 IST)", text)
         self.assertEqual(run(["flatten", "--symbol", "TSLA", "--qty", "0", "--orders", self.orders])[0], 1)
+        # no plan and no config: the built-in default is 15:15 too
+        code, text, _ = run(["flatten", "--symbol", "RELIANCE.NS", "--qty", "4", "--orders", self.orders,
+                             "--portfolio", self.none, "--plan", self.none, "--config", self.none, "--now", NOW])
+        self.assertEqual(code, 0)
+        self.assertIn("SELL 4 shares of RELIANCE.NS", text)
+        self.assertIn("(flat by 15:15 IST)", text)
 
     def test_an_edited_order_is_not_ready(self):
         self.run_risk()
