@@ -323,6 +323,26 @@ class Plans(unittest.TestCase):
             machine(plan(entry_time="10:40 AM", entry_bar=None))
         self.assertIn("not in the data", str(cm.exception))
 
+    def test_yahoos_empty_closing_bars_on_nse(self):
+        # Yahoo's NSE 5-minute data has no price for the 15:20 bar on most days: a replay to the close
+        # finds no full session, a replay to the 15:15 flat-by time uses every day
+        def no_1520(res):
+            keep_bars(res, lambda ts: ist(ts).strftime("%H:%M") != "15:20")
+        text = edited(no_1520)
+        with self.assertRaises(tm.TMError) as cm:
+            machine(text=text, replays=10)
+        self.assertIn("only 0 full session(s)", str(cm.exception))
+        self.assertIn("--until 15:15", str(cm.exception))
+        doc = machine(text=text, until="15:15", replays=300)
+        self.assertEqual((doc["mc"]["pool_sessions"], doc["mc"]["until"], doc["mc"]["bars_left"]), (59, "15:15", 63))
+        self.assertEqual(doc["history"]["sessions"], 59)
+
+    def test_nse_symbols_are_kept(self):
+        for sym in ("RELIANCE.NS", "M&M.NS", "BAJAJ-AUTO.NS", "3MINDIA.NS"):
+            self.assertEqual(plan(symbol=sym.lower())["symbol"], sym)
+        with self.assertRaises(tm.TMError):
+            plan(symbol="RELIANCE.XX")
+
     def test_plan_checks(self):
         cases = [
             (dict(entry_time="10:02 AM", entry_bar=None), "5-minute grid"),

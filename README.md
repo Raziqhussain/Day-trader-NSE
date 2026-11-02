@@ -120,6 +120,22 @@ An example, the trade in the reel: Tesla, Monday October 19 2026, real data.
 9. **`/trader-alerts`** rings on the stop, the target and at 3:55 PM to
    flatten whatever is still open.
 
+## The web UI (NSE)
+
+A local Streamlit workbench in `ui/` with four pages: Scanner, Entry, Exit plan and Time machine.
+Each page runs the skill's own tool with `--json`, so the rules match the skills exactly. It reads
+free Yahoo data on NSE hours (9:15 to 15:30 IST, flat by 15:15) and cannot place an order.
+
+```bash
+cd ~/Daytrader
+python3 -m venv .venv-ui && .venv-ui/bin/pip install -r day-trader-skill/ui/requirements.txt
+.venv-ui/bin/streamlit run day-trader-skill/ui/app.py
+```
+
+Start it from the folder you want as the workspace (or set `TRADER_HOME`): the tools keep
+`trader/watchlist.json`, `entry.json` and `plan.json` there. Keep the virtual environment outside
+this repo. Type a time in the sidebar, like `2026-11-02 10:00`, to replay a past session.
+
 ## The tools
 
 All standard-library Python. The data tools read public endpoints and are
@@ -210,6 +226,7 @@ trader-broker/      SKILL.md, ticket.py, claude_desktop_config.example.json
 trader-alerts/      SKILL.md, alerts.py, alerts.example.json
 trader-analyst/     SKILL.md, facts.py, metrics.example.json
 trader-pelosi/      SKILL.md, ptr.py
+ui/                 Streamlit UI: app.py, common.py, views/ (scanner, entry, exit, time machine)
 tests/              unittest suite + offline fixtures
 ```
 

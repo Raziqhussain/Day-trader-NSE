@@ -83,6 +83,7 @@ BACKOFF = 5.0        # seconds to wait once after a 429
 HOSTS = ("query2", "query1")
 INTERVAL = 300       # 5-minute bars, in seconds
 SESSION_BARS = 75    # 9:15 to 15:30 in 5-minute bars
+FLAT_HINT_MIN = 15 * 60 + 15   # past this --until, a short pool is most likely Yahoo's empty closing bars
 OPEN_MIN = 9 * 60 + 15
 CLOSE_MIN = 15 * 60 + 30
 MIN_SESSIONS = 20
@@ -298,16 +299,18 @@ def split_sessions(bars):
     return days
 
 
-def full_sessions(days, before):
-    """Full sessions (all 75 bars) strictly before the plan's date, oldest first,
-    and the short ones that were left out (half days, gaps)."""
+def full_sessions(days, before, need=SESSION_BARS):
+    """Sessions strictly before the plan's date with every bar the replay uses (the first `need`,
+    all 75 by default), oldest first, cut to those bars; and the short ones that were left out
+    (gaps). Yahoo's NSE 5-minute data has no price for the 15:20 bar on most days, so a replay
+    to the 15:15 flat-by time needs 72 bars, not the full session."""
     full, short = [], []
     for d in sorted(days):
         if d >= before:
             continue
         s = days[d]
-        if len(s) == SESSION_BARS:
-            full.append((d, [s[i] for i in range(SESSION_BARS)]))
+        if all(i in s for i in range(need)):
+            full.append((d, [s[i] for i in range(need)]))
         else:
             short.append({"date": d, "bars": len(s)})
     return full, short
@@ -317,9 +320,10 @@ def full_sessions(days, before):
 
 def build_pool(sessions):
     """pool[i] = every past session's bar i as (o, h, l, c) / bar i-1's close, in date order."""
-    pool = [[] for _ in range(SESSION_BARS)]
+    width = len(sessions[0][1]) if sessions else SESSION_BARS
+    pool = [[] for _ in range(width)]
     for _, D in sessions:
-        for i in range(1, SESSION_BARS):
+        for i in range(1, width):
             pc = D[i - 1]["c"]
             pool[i].append((D[i]["o"] / pc, D[i]["h"] / pc, D[i]["l"] / pc, D[i]["c"] / pc))
     return pool
@@ -336,7 +340,7 @@ def simulate(pool, entry, stop, target, k, last, replays=10000, seed=19, window=
     r_target = round(((target - entry) if long else (entry - target)) / risk, 4)
 
     def slot(rng, i):
-        return i if window == 0 else min(SESSION_BARS - 1, max(1, i + rng.randint(-window, window)))
+        return i if window == 0 else min(len(pool) - 1, max(1, i + rng.randint(-window, window)))
 
     rng = random.Random(seed)
     choice = rng.choice
@@ -514,7 +518,7 @@ def load_plan(a, now_utc):
 def normalize_plan(raw, src="flags"):
     """A plan dict (trader/plan.json shape) -> the checked plan the time machine runs."""
     sym = str(raw.get("symbol") or "").strip().upper()
-    if not re.match(r"^[A-Z][A-Z0-9.\-]{0,9}$", sym):
+    if not re.match(r"^[A-Z][A-Z0-9.\-]{0,9}$|^[A-Z0-9&\-]{1,20}\.NS$", sym):   # an NSE symbol keeps its .NS
         raise TMError("the plan needs a ticker symbol, got %r" % raw.get("symbol"))
     side = str(raw.get("side") or "buy").lower()
     if side not in ("buy", "sell"):
@@ -700,10 +704,14 @@ def time_machine(text, plan, now_utc, replays=10000, seed=19, window=2, until=No
     if not eb["l"] - 0.01 <= plan["entry"] <= eb["h"] + 0.01:
         warn.append("the plan's entry %.2f is outside that bar's range %.2f to %.2f"
                     % (plan["entry"], eb["l"], eb["h"]))
-    sessions, short = full_sessions(days, plan["date"])
+    sessions, short = full_sessions(days, plan["date"], last + 1)
     if len(sessions) < MIN_SESSIONS:
-        raise TMError("only %d full session(s) of %s before %s in the data; the time machine needs at least %d"
-                      % (len(sessions), sym, plan["date"], MIN_SESSIONS))
+        hint = ""
+        if until_min > FLAT_HINT_MIN:
+            hint = (" (Yahoo's NSE 5-minute data has no price for the last bars of most sessions: replay to "
+                    "your flat-by time with --until 15:15)")
+        raise TMError("only %d full session(s) of %s before %s in the data; the time machine needs at least %d%s"
+                      % (len(sessions), sym, plan["date"], MIN_SESSIONS, hint))
     pool = build_pool(sessions)
     mc = simulate(pool, plan["entry"], plan["stop"], plan["target"], k, last, replays, seed, window, plan["side"])
     mc = dict(mc, until=clock24(until_min), pool_sessions=len(sessions), pool_from=sessions[0][0],
